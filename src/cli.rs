@@ -9,10 +9,15 @@ fn get_tool_validation_help() -> String {
     let mut help = String::new();
 
     let dashify_status = check_tool("dashify", "--version");
+    let rkvr_status = check_tool("rkvr", "--version");
     help.push_str("OPTIONAL TOOLS:\n");
     help.push_str(&format!(
         "  {} {:<10} {:>12}  (file renaming)\n",
         dashify_status.status_icon, "dashify", dashify_status.version
+    ));
+    help.push_str(&format!(
+        "  {} {:<10} {:>12}  (safe file removal with recovery)\n",
+        rkvr_status.status_icon, "rkvr", rkvr_status.version
     ));
 
     help.push('\n');
