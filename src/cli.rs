@@ -29,11 +29,7 @@ pub fn check_cron_status() -> String {
         Ok(output) if output.status.success() => {
             let crontab = String::from_utf8_lossy(&output.stdout);
             if let Some(line) = crontab.lines().find(|l| l.contains(marker)) {
-                let schedule = line
-                    .trim()
-                    .strip_suffix(marker)
-                    .unwrap_or(line.trim())
-                    .trim();
+                let schedule = line.trim().strip_suffix(marker).unwrap_or(line.trim()).trim();
                 format!("✅ installed: {}", schedule)
             } else {
                 "❌ not installed (use: kondo cron install)".to_string()

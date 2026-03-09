@@ -13,9 +13,11 @@ use std::process::Command;
 
 mod cli;
 mod config;
+mod report;
 
 use cli::{Cli, Commands, CronAction};
 use config::Config;
+use report::{Action, Report};
 
 fn setup_logging() -> Result<()> {
     let log_dir = dirs::data_local_dir()
@@ -77,7 +79,7 @@ fn dashify_file(path: &Path, dry_run: bool) -> Result<PathBuf> {
 
     // Parse "old -> new" format
     let new_name = match line.split_once(" -> ") {
-        Some((_old, new)) => new.trim(),
+        Some((_, new)) => new.trim(),
         None => return Ok(path.to_path_buf()),
     };
 
@@ -115,90 +117,67 @@ fn dashify_file(path: &Path, dry_run: bool) -> Result<PathBuf> {
     }
 }
 
-/// Move a file to the destination directory, preserving the filename
-fn move_file(src: &Path, dest_dir: &Path, dry_run: bool, verbose: bool) -> Result<bool> {
+/// Move a file to the destination directory, preserving the filename.
+/// Returns the Action taken and the destination path.
+fn move_file(src: &Path, dest_dir: &Path, dry_run: bool) -> Result<(Action, PathBuf, Option<String>)> {
     let filename = match src.file_name() {
         Some(f) => f,
-        None => return Ok(false),
+        None => {
+            return Ok((Action::Skip, dest_dir.to_path_buf(), Some("no filename".to_string())));
+        }
     };
     let dest = dest_dir.join(filename);
 
     // Don't overwrite existing files
     if dest.exists() {
-        if verbose {
-            println!(
-                "  {} {} (already exists at destination)",
-                "skip".yellow(),
-                src.display()
-            );
-        }
         log::info!("Skipping {} -> {} (exists)", src.display(), dest.display());
-        return Ok(false);
+        return Ok((
+            Action::Skip,
+            dest,
+            Some(format!("already exists at {}", dest_dir.display())),
+        ));
     }
 
     if dry_run {
-        println!(
-            "  {} {} -> {}",
-            "would move".cyan(),
-            src.display(),
-            dest.display()
-        );
-        return Ok(true);
+        return Ok((Action::Move, dest, None));
     }
 
     // Ensure destination directory exists
-    fs::create_dir_all(dest_dir)
-        .context(format!("Failed to create directory {}", dest_dir.display()))?;
+    fs::create_dir_all(dest_dir).context(format!("Failed to create directory {}", dest_dir.display()))?;
 
     // Try rename first (same filesystem), fall back to copy+remove
     if fs::rename(src, &dest).is_err() {
-        fs::copy(src, &dest).context(format!(
-            "Failed to copy {} -> {}",
-            src.display(),
-            dest.display()
-        ))?;
+        fs::copy(src, &dest).context(format!("Failed to copy {} -> {}", src.display(), dest.display()))?;
         fs::remove_file(src).context(format!("Failed to remove source {}", src.display()))?;
     }
 
-    if verbose {
-        println!(
-            "  {} {} -> {}",
-            "moved".green(),
-            src.display(),
-            dest.display()
-        );
-    }
     log::info!("Moved {} -> {}", src.display(), dest.display());
-    Ok(true)
+    Ok((Action::Move, dest, None))
 }
 
 /// Scan source directories and organize files according to rules
-fn organize(
-    config: &Config,
-    ext_map: &HashMap<String, PathBuf>,
-    dry_run: bool,
-    verbose: bool,
-) -> Result<(usize, usize)> {
-    let mut moved = 0usize;
-    let mut skipped = 0usize;
+fn organize(config: &Config, ext_map: &HashMap<String, PathBuf>, dry_run: bool) -> Result<Report> {
+    let mut report = Report::default();
 
     for source in config.source_paths() {
         if !source.exists() {
-            if verbose {
-                println!("  {} {} (not found)", "skip".yellow(), source.display());
-            }
+            report.push(
+                Action::Skip,
+                source.clone(),
+                None,
+                Some("source directory not found".to_string()),
+            );
             continue;
         }
 
-        let entries = fs::read_dir(&source)
-            .context(format!("Failed to read directory {}", source.display()))?;
+        let entries = fs::read_dir(&source).context(format!("Failed to read directory {}", source.display()))?;
 
         for entry in entries {
             let entry = entry?;
             let path = entry.path();
 
-            // Only process regular files
-            if !path.is_file() {
+            // Only process regular files (skip symlinks)
+            if !path.is_file() || path.is_symlink() {
                 continue;
             }
 
@@ -212,7 +191,7 @@ fn organize(
             let dest_dir = match ext_map.get(&ext) {
                 Some(d) => d.clone(),
                 None => {
-                    skipped += 1;
+                    report.push(Action::Skip, path, None, Some("no matching rule".to_string()));
                     continue;
                 }
             };
@@ -223,14 +202,12 @@ fn organize(
                     Ok(p) => p,
                     Err(e) => {
                         log::warn!("dashify failed for {}: {}", path.display(), e);
-                        if verbose {
-                            println!(
-                                "  {} dashify failed for {}: {}",
-                                "warn".yellow(),
-                                path.display(),
-                                e
-                            );
-                        }
+                        report.push(
+                            Action::Error,
+                            path.clone(),
+                            None,
+                            Some(format!("dashify failed: {}", e)),
+                        );
                         path.clone()
                     }
                 }
@@ -238,14 +215,12 @@ fn organize(
                 path.clone()
             };
 
-            match move_file(&final_path, &dest_dir, dry_run, verbose)? {
-                true => moved += 1,
-                false => skipped += 1,
-            }
+            let (action, dest, reason) = move_file(&final_path, &dest_dir, dry_run)?;
+            report.push(action, final_path, Some(dest), reason);
         }
     }
 
-    Ok((moved, skipped))
+    Ok(report)
 }
 
 /// Get the path to the kondo binary
@@ -272,10 +247,7 @@ fn install_cron(schedule: &str, config_path: Option<&PathBuf>) -> Result<()> {
         .unwrap_or_default();
 
     // Remove any existing kondo lines
-    let filtered: Vec<&str> = existing
-        .lines()
-        .filter(|line| !line.contains(marker))
-        .collect();
+    let filtered: Vec<&str> = existing.lines().filter(|line| !line.contains(marker)).collect();
 
     let mut new_crontab = filtered.join("\n");
     if !new_crontab.is_empty() && !new_crontab.ends_with('\n') {
@@ -302,11 +274,7 @@ fn install_cron(schedule: &str, config_path: Option<&PathBuf>) -> Result<()> {
         eyre::bail!("crontab command failed");
     }
 
-    println!(
-        "{} Cron job installed: {}",
-        "installed".green(),
-        cron_line
-    );
+    println!("{} Cron job installed: {}", "installed".green(), cron_line);
     Ok(())
 }
 
@@ -320,10 +288,7 @@ fn uninstall_cron() -> Result<()> {
         .map(|o| String::from_utf8_lossy(&o.stdout).to_string())
         .unwrap_or_default();
 
-    let filtered: Vec<&str> = existing
-        .lines()
-        .filter(|line| !line.contains(marker))
-        .collect();
+    let filtered: Vec<&str> = existing.lines().filter(|line| !line.contains(marker)).collect();
 
     let new_crontab = format!("{}\n", filtered.join("\n"));
 
@@ -386,19 +351,11 @@ fn main() -> Result<()> {
         if cli.dry_run {
             println!("{}", "  (dry run - no files will be moved)".yellow());
         }
+        println!();
     }
 
-    let (moved, skipped) = organize(&config, &ext_map, cli.dry_run, cli.verbose || cli.dry_run)?;
-
-    if cli.verbose || cli.dry_run || moved > 0 {
-        let action = if cli.dry_run { "would move" } else { "moved" };
-        println!(
-            "{} {} file(s), {} skipped",
-            action.green(),
-            moved,
-            skipped
-        );
-    }
+    let report = organize(&config, &ext_map, cli.dry_run)?;
+    report.print(cli.dry_run, cli.verbose);
 
     Ok(())
 }

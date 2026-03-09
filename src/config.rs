@@ -5,15 +5,15 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 fn expand_tilde(path: &str) -> PathBuf {
-    if let Some(rest) = path.strip_prefix("~/") {
-        if let Some(home) = dirs::home_dir() {
-            return home.join(rest);
-        }
+    if let Some(rest) = path.strip_prefix("~/")
+        && let Some(home) = dirs::home_dir()
+    {
+        return home.join(rest);
     }
-    if path == "~" {
-        if let Some(home) = dirs::home_dir() {
-            return home;
-        }
+    if path == "~"
+        && let Some(home) = dirs::home_dir()
+    {
+        return home;
     }
     PathBuf::from(path)
 }
@@ -64,25 +64,18 @@ impl Config {
     /// Load configuration with fallback chain
     pub fn load(config_path: Option<&PathBuf>) -> Result<Self> {
         if let Some(path) = config_path {
-            return Self::load_from_file(path)
-                .context(format!("Failed to load config from {}", path.display()));
+            return Self::load_from_file(path).context(format!("Failed to load config from {}", path.display()));
         }
 
         // Try ~/.config/kondo/kondo.yml
         if let Some(config_dir) = dirs::config_dir() {
             let project_name = env!("CARGO_PKG_NAME");
-            let primary_config = config_dir
-                .join(project_name)
-                .join(format!("{}.yml", project_name));
+            let primary_config = config_dir.join(project_name).join(format!("{}.yml", project_name));
             if primary_config.exists() {
                 match Self::load_from_file(&primary_config) {
                     Ok(config) => return Ok(config),
                     Err(e) => {
-                        log::warn!(
-                            "Failed to load config from {}: {}",
-                            primary_config.display(),
-                            e
-                        );
+                        log::warn!("Failed to load config from {}: {}", primary_config.display(), e);
                     }
                 }
             }
@@ -95,11 +88,7 @@ impl Config {
             match Self::load_from_file(&fallback_config) {
                 Ok(config) => return Ok(config),
                 Err(e) => {
-                    log::warn!(
-                        "Failed to load config from {}: {}",
-                        fallback_config.display(),
-                        e
-                    );
+                    log::warn!("Failed to load config from {}: {}", fallback_config.display(), e);
                 }
             }
         }
