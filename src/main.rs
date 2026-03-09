@@ -319,10 +319,17 @@ fn organize(
             let dest_dir = match ext_map.get(&ext) {
                 Some(d) => d.clone(),
                 None => {
-                    report.push(Action::Skip, path, None, Some("no matching rule".to_string()));
+                    report.push(Action::Unmanaged, path, None, Some("no matching rule".to_string()));
                     continue;
                 }
             };
+
+            // Short-circuit: file is already in its destination directory
+            if let Some(parent) = path.parent() {
+                if parent == dest_dir {
+                    continue;
+                }
+            }
 
             // Compute final destination directory, preserving relative path if enabled
             let final_dest_dir = if preserve_paths {

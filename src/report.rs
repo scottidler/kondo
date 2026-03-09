@@ -9,6 +9,7 @@ pub enum Action {
     Skip,
     Conflict,
     Exclude,
+    Unmanaged,
     Error,
 }
 
@@ -21,6 +22,7 @@ impl Action {
             Action::Skip => "skip",
             Action::Conflict => "conflict",
             Action::Exclude => "exclude",
+            Action::Unmanaged => "unmanaged",
             Action::Error => "error",
         }
     }
@@ -33,6 +35,7 @@ impl Action {
             Action::Skip => "skipped",
             Action::Conflict => "conflict",
             Action::Exclude => "excluded",
+            Action::Unmanaged => "unmanaged",
             Action::Error => "error",
         }
     }
@@ -42,7 +45,7 @@ impl Action {
             Action::Move | Action::Dedup => text.green(),
             Action::Skip => text.yellow(),
             Action::Conflict | Action::Error => text.red(),
-            Action::Exclude => text.dimmed(),
+            Action::Exclude | Action::Unmanaged => text.dimmed(),
         }
     }
 }
@@ -94,6 +97,7 @@ impl Report {
             Action::Skip,
             Action::Conflict,
             Action::Exclude,
+            Action::Unmanaged,
             Action::Error,
         ];
 
@@ -111,11 +115,11 @@ impl Report {
             println!("  {} {:>4} file(s)", action.colorize(&format!("{:<10}", label)), count);
         }
 
-        // Details: non-move entries (or all entries if verbose)
+        // Details: hide move and unmanaged unless verbose
         let detail_entries: Vec<&ReportEntry> = self
             .entries
             .iter()
-            .filter(|e| verbose || e.action != Action::Move)
+            .filter(|e| verbose || (e.action != Action::Move && e.action != Action::Unmanaged))
             .collect();
 
         if !detail_entries.is_empty() {
@@ -149,7 +153,7 @@ mod tests {
             None,
         );
         report.push(
-            Action::Skip,
+            Action::Unmanaged,
             PathBuf::from("c.zip"),
             None,
             Some("no matching rule".to_string()),
@@ -162,9 +166,10 @@ mod tests {
         );
 
         assert_eq!(report.count(&Action::Move), 2);
-        assert_eq!(report.count(&Action::Skip), 1);
+        assert_eq!(report.count(&Action::Unmanaged), 1);
         assert_eq!(report.count(&Action::Error), 1);
         assert_eq!(report.count(&Action::Dedup), 0);
+        assert_eq!(report.count(&Action::Skip), 0);
         assert_eq!(report.count(&Action::Conflict), 0);
         assert_eq!(report.count(&Action::Exclude), 0);
     }
@@ -172,7 +177,7 @@ mod tests {
     #[test]
     fn test_report_entry_display_with_reason() {
         let entry = ReportEntry {
-            action: Action::Skip,
+            action: Action::Unmanaged,
             source: PathBuf::from("/downloads/test.zip"),
             destination: None,
             reason: Some("no matching rule".to_string()),
@@ -213,6 +218,8 @@ mod tests {
         assert_eq!(Action::Dedup.past(), "deduped");
         assert_eq!(Action::Skip.present(), "skip");
         assert_eq!(Action::Skip.past(), "skipped");
+        assert_eq!(Action::Unmanaged.present(), "unmanaged");
+        assert_eq!(Action::Unmanaged.past(), "unmanaged");
     }
 
     #[test]
