@@ -34,14 +34,119 @@ pub fn check_cron_status() -> String {
         Ok(output) if output.status.success() => {
             let crontab = String::from_utf8_lossy(&output.stdout);
             if let Some(line) = crontab.lines().find(|l| l.contains(marker)) {
-                let schedule = line.trim().strip_suffix(marker).unwrap_or(line.trim()).trim();
-                format!("✅ installed: {}", schedule)
+                let entry = line.trim().strip_suffix(marker).unwrap_or(line.trim()).trim();
+                // Extract the 5 cron fields from the beginning of the entry
+                let fields: Vec<&str> = entry.splitn(6, ' ').collect();
+                let description = if fields.len() >= 5 {
+                    let schedule = fields[..5].join(" ");
+                    format!(" ({})", describe_cron(&schedule))
+                } else {
+                    String::new()
+                };
+                format!("✅ installed: {}{}", entry, description)
             } else {
                 "❌ not installed (use: kondo cron install)".to_string()
             }
         }
         _ => "❌ not installed (use: kondo cron install)".to_string(),
     }
+}
+
+fn describe_cron(schedule: &str) -> String {
+    let fields: Vec<&str> = schedule.split_whitespace().collect();
+    if fields.len() != 5 {
+        return schedule.to_string();
+    }
+    let (minute, hour, dom, month, dow) = (fields[0], fields[1], fields[2], fields[3], fields[4]);
+
+    let freq = describe_minute(minute);
+    let mut parts = vec![freq];
+
+    if hour != "*" {
+        parts.push(describe_hour(hour));
+    }
+
+    if dow != "*" {
+        parts.push(describe_dow(dow));
+    }
+
+    if dom != "*" {
+        parts.push(format!("on day(s) {}", dom));
+    }
+
+    if month != "*" {
+        parts.push(format!("in month(s) {}", month));
+    }
+
+    parts.join(", ")
+}
+
+fn describe_minute(minute: &str) -> String {
+    if minute == "*" {
+        return "every minute".to_string();
+    }
+    if let Some(interval) = minute.strip_prefix("*/") {
+        return format!("every {} minutes", interval);
+    }
+    if minute == "0" {
+        return "on the hour".to_string();
+    }
+    format!("at minute {}", minute)
+}
+
+fn describe_hour(hour: &str) -> String {
+    if let Some(interval) = hour.strip_prefix("*/") {
+        return format!("every {} hours", interval);
+    }
+    if hour.contains('-') {
+        let parts: Vec<&str> = hour.split('-').collect();
+        if parts.len() == 2 {
+            return format!("{}–{}", format_hour(parts[0]), format_hour(parts[1]));
+        }
+    }
+    if hour.contains(',') {
+        let hours: Vec<String> = hour.split(',').map(format_hour).collect();
+        return format!("at {}", hours.join(", "));
+    }
+    format!("at {}", format_hour(hour))
+}
+
+fn format_hour(h: &str) -> String {
+    match h.parse::<u32>() {
+        Ok(0) => "12am".to_string(),
+        Ok(n) if n < 12 => format!("{}am", n),
+        Ok(12) => "12pm".to_string(),
+        Ok(n) if n < 24 => format!("{}pm", n - 12),
+        _ => h.to_string(),
+    }
+}
+
+fn describe_dow(dow: &str) -> String {
+    let day_name = |d: &str| -> String {
+        match d {
+            "0" | "7" => "Sun",
+            "1" => "Mon",
+            "2" => "Tue",
+            "3" => "Wed",
+            "4" => "Thu",
+            "5" => "Fri",
+            "6" => "Sat",
+            _ => d,
+        }
+        .to_string()
+    };
+
+    if dow.contains('-') {
+        let parts: Vec<&str> = dow.split('-').collect();
+        if parts.len() == 2 {
+            return format!("{}-{}", day_name(parts[0]), day_name(parts[1]));
+        }
+    }
+    if dow.contains(',') {
+        let days: Vec<String> = dow.split(',').map(|d| day_name(d)).collect();
+        return days.join(", ");
+    }
+    day_name(dow)
 }
 
 struct ToolStatus {
