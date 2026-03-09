@@ -223,9 +223,27 @@ fn move_file(
     Ok((Action::Move, dest, None))
 }
 
+/// Check if a filename matches any exclude pattern
+fn is_excluded(filename: &str, exclude_patterns: &[glob::Pattern]) -> bool {
+    exclude_patterns.iter().any(|p| p.matches(filename))
+}
+
 /// Scan source directories and organize files according to rules
 fn organize(config: &Config, ext_map: &HashMap<String, PathBuf>, dry_run: bool) -> Result<Report> {
     let mut report = Report::default();
+
+    // Compile exclude patterns once
+    let exclude_patterns: Vec<glob::Pattern> = config
+        .exclude
+        .iter()
+        .filter_map(|p| match glob::Pattern::new(p) {
+            Ok(pattern) => Some(pattern),
+            Err(e) => {
+                log::warn!("Invalid exclude pattern '{}': {}", p, e);
+                None
+            }
+        })
+        .collect();
 
     for source in config.source_paths() {
         if !source.exists() {
@@ -247,6 +265,15 @@ fn organize(config: &Config, ext_map: &HashMap<String, PathBuf>, dry_run: bool) 
             // Only process regular files (skip symlinks)
             if !path.is_file() || path.is_symlink() {
                 continue;
+            }
+
+            // Check exclude patterns
+            if let Some(filename) = path.file_name() {
+                let filename_str = filename.to_string_lossy();
+                if is_excluded(&filename_str, &exclude_patterns) {
+                    report.push(Action::Exclude, path, None, Some("matched exclude pattern".to_string()));
+                    continue;
+                }
             }
 
             // Get extension
@@ -540,5 +567,33 @@ mod tests {
         let (action, _, _) = move_file(&src, dest_dir.path(), true, &DuplicateAction::Dedup).expect("move");
         assert_eq!(action, Action::Dedup);
         assert!(src.exists()); // dry run: source NOT removed
+    }
+
+    #[test]
+    fn test_is_excluded_matches() {
+        let patterns: Vec<glob::Pattern> = vec![
+            glob::Pattern::new("*.part").expect("pattern"),
+            glob::Pattern::new("*.crdownload").expect("pattern"),
+            glob::Pattern::new("*.tmp").expect("pattern"),
+        ];
+
+        assert!(is_excluded("download.part", &patterns));
+        assert!(is_excluded("file.crdownload", &patterns));
+        assert!(is_excluded("temp.tmp", &patterns));
+        assert!(!is_excluded("photo.png", &patterns));
+        assert!(!is_excluded("document.pdf", &patterns));
+    }
+
+    #[test]
+    fn test_is_excluded_empty_patterns() {
+        let patterns: Vec<glob::Pattern> = vec![];
+        assert!(!is_excluded("anything.txt", &patterns));
+    }
+
+    #[test]
+    fn test_is_excluded_lock_pattern() {
+        let patterns: Vec<glob::Pattern> = vec![glob::Pattern::new(".~lock.*").expect("pattern")];
+        assert!(is_excluded(".~lock.document.odt#", &patterns));
+        assert!(!is_excluded("document.odt", &patterns));
     }
 }

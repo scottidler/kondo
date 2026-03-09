@@ -41,6 +41,10 @@ pub struct Config {
     /// What to do when destination file already exists with identical content
     #[serde(rename = "on-duplicate")]
     pub on_duplicate: DuplicateAction,
+
+    /// Glob patterns for filenames to exclude from processing
+    #[serde(default)]
+    pub exclude: Vec<String>,
 }
 
 impl Default for Config {
@@ -50,6 +54,7 @@ impl Default for Config {
             sources: vec!["~/Downloads".to_string()],
             rules: HashMap::new(),
             on_duplicate: DuplicateAction::default(),
+            exclude: Vec::new(),
         }
     }
 }
