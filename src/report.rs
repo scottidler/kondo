@@ -115,17 +115,26 @@ impl Report {
             println!("  {} {:>4} file(s)", action.colorize(&format!("{:<10}", label)), count);
         }
 
-        // Details: hide move and unmanaged unless verbose
-        let detail_entries: Vec<&ReportEntry> = self
-            .entries
-            .iter()
-            .filter(|e| verbose || (e.action != Action::Move && e.action != Action::Unmanaged))
-            .collect();
-
-        if !detail_entries.is_empty() {
-            println!();
-            println!("{}:", "details".bold());
-            for entry in detail_entries {
+        // Details: grouped by action type, unmanaged hidden unless verbose
+        let mut has_details = false;
+        for action in &actions {
+            if !verbose && *action == Action::Unmanaged {
+                continue;
+            }
+            let entries: Vec<&ReportEntry> = self
+                .entries
+                .iter()
+                .filter(|e| &e.action == action)
+                .collect();
+            if entries.is_empty() {
+                continue;
+            }
+            if !has_details {
+                println!();
+                println!("{}:", "details".bold());
+                has_details = true;
+            }
+            for entry in entries {
                 let label = if dry_run { entry.action.present() } else { entry.action.past() };
                 println!("  {} {}", entry.action.colorize(&format!("{:<10}", label)), entry);
             }
