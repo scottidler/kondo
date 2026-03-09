@@ -92,12 +92,12 @@ impl Report {
 
     pub fn print(&self, dry_run: bool, verbose: bool) {
         let actions = [
+            Action::Unmanaged,
             Action::Move,
             Action::Dedup,
             Action::Skip,
-            Action::Conflict,
             Action::Exclude,
-            Action::Unmanaged,
+            Action::Conflict,
             Action::Error,
         ];
 
