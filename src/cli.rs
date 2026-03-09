@@ -86,6 +86,14 @@ pub struct Cli {
     #[arg(short = 'n', long)]
     pub dry_run: bool,
 
+    /// Disable cache and force a full scan of all source directories
+    #[arg(long)]
+    pub no_cache: bool,
+
+    /// Preserve subdirectory structure when moving files (enables recursive scanning)
+    #[arg(long)]
+    pub preserve_paths: bool,
+
     #[command(subcommand)]
     pub command: Option<Commands>,
 }

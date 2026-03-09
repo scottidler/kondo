@@ -13,10 +13,12 @@ use std::io::Read as IoRead;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+mod cache;
 mod cli;
 mod config;
 mod report;
 
+use cache::Cache;
 use cli::{Cli, Commands, CronAction};
 use config::{Config, DuplicateAction};
 use report::{Action, Report};
@@ -228,8 +230,38 @@ fn is_excluded(filename: &str, exclude_patterns: &[glob::Pattern]) -> bool {
     exclude_patterns.iter().any(|p| p.matches(filename))
 }
 
+/// Collect files from a directory, optionally recursing into subdirectories.
+fn collect_files(dir: &Path, recursive: bool) -> Result<Vec<PathBuf>> {
+    let mut files = Vec::new();
+    let entries =
+        fs::read_dir(dir).context(format!("Failed to read directory {}", dir.display()))?;
+
+    for entry in entries {
+        let entry = entry?;
+        let path = entry.path();
+
+        if path.is_symlink() {
+            continue;
+        }
+
+        if path.is_file() {
+            files.push(path);
+        } else if recursive && path.is_dir() {
+            files.extend(collect_files(&path, true)?);
+        }
+    }
+
+    Ok(files)
+}
+
 /// Scan source directories and organize files according to rules
-fn organize(config: &Config, ext_map: &HashMap<String, PathBuf>, dry_run: bool) -> Result<Report> {
+fn organize(
+    config: &Config,
+    ext_map: &HashMap<String, PathBuf>,
+    dry_run: bool,
+    mut cache: Option<&mut Cache>,
+    preserve_paths: bool,
+) -> Result<Report> {
     let mut report = Report::default();
 
     // Compile exclude patterns once
@@ -256,17 +288,18 @@ fn organize(config: &Config, ext_map: &HashMap<String, PathBuf>, dry_run: bool) 
             continue;
         }
 
-        let entries = fs::read_dir(&source).context(format!("Failed to read directory {}", source.display()))?;
-
-        for entry in entries {
-            let entry = entry?;
-            let path = entry.path();
-
-            // Only process regular files (skip symlinks)
-            if !path.is_file() || path.is_symlink() {
+        // Check cache: skip unchanged directories
+        if let Some(ref cache) = cache {
+            if cache.is_unchanged(&source) {
+                log::info!("Cache hit: {} unchanged, skipping", source.display());
                 continue;
             }
+        }
 
+        // Collect files: recursive when preserve_paths is enabled, flat otherwise
+        let files = collect_files(&source, preserve_paths)?;
+
+        for path in files {
             // Check exclude patterns
             if let Some(filename) = path.file_name() {
                 let filename_str = filename.to_string_lossy();
@@ -291,6 +324,21 @@ fn organize(config: &Config, ext_map: &HashMap<String, PathBuf>, dry_run: bool) 
                 }
             };
 
+            // Compute final destination directory, preserving relative path if enabled
+            let final_dest_dir = if preserve_paths {
+                if let Ok(rel) = path.parent().unwrap_or(&source).strip_prefix(&source) {
+                    if rel.components().count() > 0 {
+                        dest_dir.join(rel)
+                    } else {
+                        dest_dir
+                    }
+                } else {
+                    dest_dir
+                }
+            } else {
+                dest_dir
+            };
+
             // Optionally dashify the filename first
             let final_path = if config.dashify {
                 match dashify_file(&path, dry_run) {
@@ -310,8 +358,15 @@ fn organize(config: &Config, ext_map: &HashMap<String, PathBuf>, dry_run: bool) 
                 path.clone()
             };
 
-            let (action, dest, reason) = move_file(&final_path, &dest_dir, dry_run, &config.on_duplicate)?;
+            let (action, dest, reason) = move_file(&final_path, &final_dest_dir, dry_run, &config.on_duplicate)?;
             report.push(action, final_path, Some(dest), reason);
+        }
+
+        // Update cache for this directory after processing
+        if let Some(ref mut cache) = cache {
+            if let Err(e) = cache.update_dir(&source) {
+                log::warn!("Failed to update cache for {}: {}", source.display(), e);
+            }
         }
     }
 
@@ -433,6 +488,9 @@ fn main() -> Result<()> {
         };
     }
 
+    // CLI --preserve-paths overrides config
+    let preserve_paths = cli.preserve_paths || config.preserve_paths;
+
     // Run organization
     let ext_map = config.extension_map();
 
@@ -449,7 +507,30 @@ fn main() -> Result<()> {
         println!();
     }
 
-    let report = organize(&config, &ext_map, cli.dry_run)?;
+    // Load cache unless --no-cache or --dry-run
+    let use_cache = !cli.no_cache && !cli.dry_run;
+    let mut cache = if use_cache {
+        let mut cache = Cache::load();
+        let config_hash = Cache::hash_config_content(&config);
+        if cache.config_hash != config_hash {
+            log::info!("Config changed, invalidating cache");
+            cache = Cache::default();
+            cache.config_hash = config_hash;
+        }
+        Some(cache)
+    } else {
+        None
+    };
+
+    let report = organize(&config, &ext_map, cli.dry_run, cache.as_mut(), preserve_paths)?;
+
+    // Save cache after successful run
+    if let Some(ref cache) = cache {
+        if let Err(e) = cache.save() {
+            log::warn!("Failed to save cache: {}", e);
+        }
+    }
+
     report.print(cli.dry_run, cli.verbose);
 
     Ok(())
@@ -595,5 +676,87 @@ mod tests {
         let patterns: Vec<glob::Pattern> = vec![glob::Pattern::new(".~lock.*").expect("pattern")];
         assert!(is_excluded(".~lock.document.odt#", &patterns));
         assert!(!is_excluded("document.odt", &patterns));
+    }
+
+    #[test]
+    fn test_collect_files_flat() {
+        let dir = TempDir::new().expect("temp dir");
+        create_test_file(dir.path(), "a.txt", b"hello");
+        fs::create_dir(dir.path().join("subdir")).expect("mkdir");
+        create_test_file(&dir.path().join("subdir"), "b.txt", b"world");
+
+        let files = collect_files(dir.path(), false).expect("collect");
+        assert_eq!(files.len(), 1); // only top-level file
+    }
+
+    #[test]
+    fn test_collect_files_recursive() {
+        let dir = TempDir::new().expect("temp dir");
+        create_test_file(dir.path(), "a.txt", b"hello");
+        fs::create_dir(dir.path().join("subdir")).expect("mkdir");
+        create_test_file(&dir.path().join("subdir"), "b.txt", b"world");
+
+        let files = collect_files(dir.path(), true).expect("collect");
+        assert_eq!(files.len(), 2); // top-level + nested
+    }
+
+    #[test]
+    fn test_preserve_paths_moves_to_subdir() {
+        let src_dir = TempDir::new().expect("temp dir");
+        let dest_dir = TempDir::new().expect("temp dir");
+
+        // Create ~/Downloads/project/notes.pdf
+        let subdir = src_dir.path().join("project");
+        fs::create_dir(&subdir).expect("mkdir");
+        create_test_file(&subdir, "notes.pdf", b"pdf content");
+
+        let config = Config {
+            dashify: false,
+            sources: vec![src_dir.path().to_string_lossy().to_string()],
+            rules: HashMap::from([(
+                dest_dir.path().to_string_lossy().to_string(),
+                vec!["pdf".to_string()],
+            )]),
+            on_duplicate: DuplicateAction::Skip,
+            exclude: Vec::new(),
+            preserve_paths: true,
+        };
+
+        let ext_map = config.extension_map();
+        let report = organize(&config, &ext_map, false, None, true).expect("organize");
+
+        // Should have moved to dest_dir/project/notes.pdf
+        let expected = dest_dir.path().join("project").join("notes.pdf");
+        assert!(expected.exists(), "file should be at {:?}", expected);
+        assert_eq!(report.count(&Action::Move), 1);
+    }
+
+    #[test]
+    fn test_no_preserve_paths_flattens() {
+        let src_dir = TempDir::new().expect("temp dir");
+        let dest_dir = TempDir::new().expect("temp dir");
+
+        let subdir = src_dir.path().join("project");
+        fs::create_dir(&subdir).expect("mkdir");
+        create_test_file(&subdir, "notes.pdf", b"pdf content");
+
+        let config = Config {
+            dashify: false,
+            sources: vec![src_dir.path().to_string_lossy().to_string()],
+            rules: HashMap::from([(
+                dest_dir.path().to_string_lossy().to_string(),
+                vec!["pdf".to_string()],
+            )]),
+            on_duplicate: DuplicateAction::Skip,
+            exclude: Vec::new(),
+            preserve_paths: false,
+        };
+
+        let ext_map = config.extension_map();
+        // preserve_paths=false: subdirectories not scanned at all
+        let report = organize(&config, &ext_map, false, None, false).expect("organize");
+
+        // With preserve_paths=false, subdirectories are not scanned
+        assert_eq!(report.count(&Action::Move), 0);
     }
 }

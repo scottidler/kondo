@@ -45,6 +45,10 @@ pub struct Config {
     /// Glob patterns for filenames to exclude from processing
     #[serde(default)]
     pub exclude: Vec<String>,
+
+    /// Preserve subdirectory structure when moving files
+    #[serde(rename = "preserve-paths", default)]
+    pub preserve_paths: bool,
 }
 
 impl Default for Config {
@@ -55,6 +59,7 @@ impl Default for Config {
             rules: HashMap::new(),
             on_duplicate: DuplicateAction::default(),
             exclude: Vec::new(),
+            preserve_paths: false,
         }
     }
 }

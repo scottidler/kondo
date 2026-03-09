@@ -83,7 +83,7 @@ impl Report {
         });
     }
 
-    fn count(&self, action: &Action) -> usize {
+    pub fn count(&self, action: &Action) -> usize {
         self.entries.iter().filter(|e| &e.action == action).count()
     }
 
