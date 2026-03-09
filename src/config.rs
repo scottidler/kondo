@@ -18,6 +18,14 @@ fn expand_tilde(path: &str) -> PathBuf {
     PathBuf::from(path)
 }
 
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum DuplicateAction {
+    #[default]
+    Skip,
+    Dedup,
+}
+
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(default)]
 pub struct Config {
@@ -29,6 +37,10 @@ pub struct Config {
 
     /// Rules mapping destination directory -> list of extensions
     pub rules: HashMap<String, Vec<String>>,
+
+    /// What to do when destination file already exists with identical content
+    #[serde(rename = "on-duplicate")]
+    pub on_duplicate: DuplicateAction,
 }
 
 impl Default for Config {
@@ -37,6 +49,7 @@ impl Default for Config {
             dashify: true,
             sources: vec!["~/Downloads".to_string()],
             rules: HashMap::new(),
+            on_duplicate: DuplicateAction::default(),
         }
     }
 }

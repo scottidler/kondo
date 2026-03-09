@@ -6,8 +6,10 @@ use clap::Parser;
 use colored::*;
 use eyre::{Context, Result};
 use log::info;
+use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 use std::fs;
+use std::io::Read as IoRead;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -16,7 +18,7 @@ mod config;
 mod report;
 
 use cli::{Cli, Commands, CronAction};
-use config::Config;
+use config::{Config, DuplicateAction};
 use report::{Action, Report};
 
 fn setup_logging() -> Result<()> {
@@ -117,9 +119,44 @@ fn dashify_file(path: &Path, dry_run: bool) -> Result<PathBuf> {
     }
 }
 
+/// Safely remove a file using rkvr rmrf (archives before removal for recovery)
+fn safe_remove_file(path: &Path) -> Result<()> {
+    let status = Command::new("rkvr")
+        .arg("rmrf")
+        .arg(path)
+        .status()
+        .context(format!("Failed to run rkvr rmrf on {}", path.display()))?;
+    if !status.success() {
+        eyre::bail!("rkvr rmrf failed for {}", path.display());
+    }
+    Ok(())
+}
+
+/// Compute SHA-256 hash of a file
+fn sha256_file(path: &Path) -> Result<String> {
+    let mut file = fs::File::open(path).context(format!("Failed to open {}", path.display()))?;
+    let mut hasher = Sha256::new();
+    let mut buffer = [0u8; 8192];
+    loop {
+        let bytes_read = file
+            .read(&mut buffer)
+            .context(format!("Failed to read {}", path.display()))?;
+        if bytes_read == 0 {
+            break;
+        }
+        hasher.update(&buffer[..bytes_read]);
+    }
+    Ok(format!("{:x}", hasher.finalize()))
+}
+
 /// Move a file to the destination directory, preserving the filename.
 /// Returns the Action taken and the destination path.
-fn move_file(src: &Path, dest_dir: &Path, dry_run: bool) -> Result<(Action, PathBuf, Option<String>)> {
+fn move_file(
+    src: &Path,
+    dest_dir: &Path,
+    dry_run: bool,
+    on_duplicate: &DuplicateAction,
+) -> Result<(Action, PathBuf, Option<String>)> {
     let filename = match src.file_name() {
         Some(f) => f,
         None => {
@@ -128,14 +165,45 @@ fn move_file(src: &Path, dest_dir: &Path, dry_run: bool) -> Result<(Action, Path
     };
     let dest = dest_dir.join(filename);
 
-    // Don't overwrite existing files
     if dest.exists() {
-        log::info!("Skipping {} -> {} (exists)", src.display(), dest.display());
-        return Ok((
-            Action::Skip,
-            dest,
-            Some(format!("already exists at {}", dest_dir.display())),
-        ));
+        // Compare file sizes first (fast reject)
+        let src_meta = fs::metadata(src).context(format!("Failed to stat {}", src.display()))?;
+        let dest_meta = fs::metadata(&dest).context(format!("Failed to stat {}", dest.display()))?;
+
+        if src_meta.len() != dest_meta.len() {
+            let reason = format!("differs from {} (different size)", dest.display());
+            return Ok((Action::Conflict, dest, Some(reason)));
+        }
+
+        // Same size, compare content hashes
+        let src_hash = sha256_file(src)?;
+        let dest_hash = sha256_file(&dest)?;
+
+        if src_hash != dest_hash {
+            let reason = format!("differs from {} (different content)", dest.display());
+            return Ok((Action::Conflict, dest, Some(reason)));
+        }
+
+        // Identical content
+        match on_duplicate {
+            DuplicateAction::Dedup => {
+                let reason = format!("identical to {}, source removed", dest.display());
+                if !dry_run {
+                    safe_remove_file(src)?;
+                }
+                log::info!("Deduped {} (identical to {})", src.display(), dest.display());
+                return Ok((Action::Dedup, dest, Some(reason)));
+            }
+            DuplicateAction::Skip => {
+                let reason = format!("already exists at {}", dest_dir.display());
+                log::info!(
+                    "Skipping {} -> {} (identical, on-duplicate: skip)",
+                    src.display(),
+                    dest.display()
+                );
+                return Ok((Action::Skip, dest, Some(reason)));
+            }
+        }
     }
 
     if dry_run {
@@ -148,7 +216,7 @@ fn move_file(src: &Path, dest_dir: &Path, dry_run: bool) -> Result<(Action, Path
     // Try rename first (same filesystem), fall back to copy+remove
     if fs::rename(src, &dest).is_err() {
         fs::copy(src, &dest).context(format!("Failed to copy {} -> {}", src.display(), dest.display()))?;
-        fs::remove_file(src).context(format!("Failed to remove source {}", src.display()))?;
+        safe_remove_file(src)?;
     }
 
     log::info!("Moved {} -> {}", src.display(), dest.display());
@@ -215,7 +283,7 @@ fn organize(config: &Config, ext_map: &HashMap<String, PathBuf>, dry_run: bool) 
                 path.clone()
             };
 
-            let (action, dest, reason) = move_file(&final_path, &dest_dir, dry_run)?;
+            let (action, dest, reason) = move_file(&final_path, &dest_dir, dry_run, &config.on_duplicate)?;
             report.push(action, final_path, Some(dest), reason);
         }
     }
@@ -358,4 +426,119 @@ fn main() -> Result<()> {
     report.print(cli.dry_run, cli.verbose);
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Write;
+    use tempfile::TempDir;
+
+    fn create_test_file(dir: &Path, name: &str, content: &[u8]) -> PathBuf {
+        let path = dir.join(name);
+        let mut f = fs::File::create(&path).expect("create test file");
+        f.write_all(content).expect("write test file");
+        path
+    }
+
+    #[test]
+    fn test_sha256_file_identical_content() {
+        let dir = TempDir::new().expect("temp dir");
+        let file1 = create_test_file(dir.path(), "a.txt", b"hello world");
+        let file2 = create_test_file(dir.path(), "b.txt", b"hello world");
+
+        let hash1 = sha256_file(&file1).expect("hash");
+        let hash2 = sha256_file(&file2).expect("hash");
+        assert_eq!(hash1, hash2);
+    }
+
+    #[test]
+    fn test_sha256_file_different_content() {
+        let dir = TempDir::new().expect("temp dir");
+        let file1 = create_test_file(dir.path(), "a.txt", b"hello world");
+        let file2 = create_test_file(dir.path(), "b.txt", b"hello world!");
+
+        let hash1 = sha256_file(&file1).expect("hash");
+        let hash2 = sha256_file(&file2).expect("hash");
+        assert_ne!(hash1, hash2);
+    }
+
+    #[test]
+    fn test_move_file_no_conflict() {
+        let src_dir = TempDir::new().expect("temp dir");
+        let dest_dir = TempDir::new().expect("temp dir");
+        let src = create_test_file(src_dir.path(), "photo.png", b"image data");
+
+        let (action, dest, reason) = move_file(&src, dest_dir.path(), false, &DuplicateAction::Skip).expect("move");
+        assert_eq!(action, Action::Move);
+        assert_eq!(dest, dest_dir.path().join("photo.png"));
+        assert!(reason.is_none());
+        assert!(dest.exists());
+        assert!(!src.exists());
+    }
+
+    #[test]
+    fn test_move_file_identical_skip() {
+        let src_dir = TempDir::new().expect("temp dir");
+        let dest_dir = TempDir::new().expect("temp dir");
+        let content = b"identical content";
+        let src = create_test_file(src_dir.path(), "photo.png", content);
+        create_test_file(dest_dir.path(), "photo.png", content);
+
+        let (action, _, _) = move_file(&src, dest_dir.path(), false, &DuplicateAction::Skip).expect("move");
+        assert_eq!(action, Action::Skip);
+        assert!(src.exists()); // source NOT removed
+    }
+
+    #[test]
+    fn test_move_file_identical_dedup() {
+        let src_dir = TempDir::new().expect("temp dir");
+        let dest_dir = TempDir::new().expect("temp dir");
+        let content = b"identical content";
+        let src = create_test_file(src_dir.path(), "photo.png", content);
+        create_test_file(dest_dir.path(), "photo.png", content);
+
+        let (action, _, reason) = move_file(&src, dest_dir.path(), false, &DuplicateAction::Dedup).expect("move");
+        assert_eq!(action, Action::Dedup);
+        assert!(!src.exists()); // source removed
+        assert!(reason.expect("reason").contains("source removed"));
+    }
+
+    #[test]
+    fn test_move_file_different_content_conflict() {
+        let src_dir = TempDir::new().expect("temp dir");
+        let dest_dir = TempDir::new().expect("temp dir");
+        let src = create_test_file(src_dir.path(), "report.pdf", b"version 2");
+        create_test_file(dest_dir.path(), "report.pdf", b"version 1");
+
+        let (action, _, reason) = move_file(&src, dest_dir.path(), false, &DuplicateAction::Dedup).expect("move");
+        assert_eq!(action, Action::Conflict);
+        assert!(src.exists()); // source NOT removed
+        assert!(reason.expect("reason").contains("differs from"));
+    }
+
+    #[test]
+    fn test_move_file_different_size_conflict() {
+        let src_dir = TempDir::new().expect("temp dir");
+        let dest_dir = TempDir::new().expect("temp dir");
+        let src = create_test_file(src_dir.path(), "doc.txt", b"short");
+        create_test_file(dest_dir.path(), "doc.txt", b"much longer content here");
+
+        let (action, _, reason) = move_file(&src, dest_dir.path(), false, &DuplicateAction::Dedup).expect("move");
+        assert_eq!(action, Action::Conflict);
+        assert!(reason.expect("reason").contains("different size"));
+    }
+
+    #[test]
+    fn test_move_file_dry_run_dedup_no_delete() {
+        let src_dir = TempDir::new().expect("temp dir");
+        let dest_dir = TempDir::new().expect("temp dir");
+        let content = b"same content";
+        let src = create_test_file(src_dir.path(), "photo.png", content);
+        create_test_file(dest_dir.path(), "photo.png", content);
+
+        let (action, _, _) = move_file(&src, dest_dir.path(), true, &DuplicateAction::Dedup).expect("move");
+        assert_eq!(action, Action::Dedup);
+        assert!(src.exists()); // dry run: source NOT removed
+    }
 }
