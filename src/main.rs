@@ -233,8 +233,7 @@ fn is_excluded(filename: &str, exclude_patterns: &[glob::Pattern]) -> bool {
 /// Collect files from a directory, optionally recursing into subdirectories.
 fn collect_files(dir: &Path, recursive: bool) -> Result<Vec<PathBuf>> {
     let mut files = Vec::new();
-    let entries =
-        fs::read_dir(dir).context(format!("Failed to read directory {}", dir.display()))?;
+    let entries = fs::read_dir(dir).context(format!("Failed to read directory {}", dir.display()))?;
 
     for entry in entries {
         let entry = entry?;
@@ -289,11 +288,11 @@ fn organize(
         }
 
         // Check cache: skip unchanged directories
-        if let Some(ref cache) = cache {
-            if cache.is_unchanged(&source) {
-                log::info!("Cache hit: {} unchanged, skipping", source.display());
-                continue;
-            }
+        if let Some(ref cache) = cache
+            && cache.is_unchanged(&source)
+        {
+            log::info!("Cache hit: {} unchanged, skipping", source.display());
+            continue;
         }
 
         // Collect files: recursive when preserve_paths is enabled, flat otherwise
@@ -325,20 +324,16 @@ fn organize(
             };
 
             // Short-circuit: file is already in its destination directory
-            if let Some(parent) = path.parent() {
-                if parent == dest_dir {
-                    continue;
-                }
+            if let Some(parent) = path.parent()
+                && parent == dest_dir
+            {
+                continue;
             }
 
             // Compute final destination directory, preserving relative path if enabled
             let final_dest_dir = if preserve_paths {
                 if let Ok(rel) = path.parent().unwrap_or(&source).strip_prefix(&source) {
-                    if rel.components().count() > 0 {
-                        dest_dir.join(rel)
-                    } else {
-                        dest_dir
-                    }
+                    if rel.components().count() > 0 { dest_dir.join(rel) } else { dest_dir }
                 } else {
                     dest_dir
                 }
@@ -370,10 +365,10 @@ fn organize(
         }
 
         // Update cache for this directory after processing
-        if let Some(ref mut cache) = cache {
-            if let Err(e) = cache.update_dir(&source) {
-                log::warn!("Failed to update cache for {}: {}", source.display(), e);
-            }
+        if let Some(ref mut cache) = cache
+            && let Err(e) = cache.update_dir(&source)
+        {
+            log::warn!("Failed to update cache for {}: {}", source.display(), e);
         }
     }
 
@@ -532,10 +527,10 @@ fn main() -> Result<()> {
     let report = organize(&config, &ext_map, cli.dry_run, cache.as_mut(), preserve_paths)?;
 
     // Save cache after successful run
-    if let Some(ref cache) = cache {
-        if let Err(e) = cache.save() {
-            log::warn!("Failed to save cache: {}", e);
-        }
+    if let Some(ref cache) = cache
+        && let Err(e) = cache.save()
+    {
+        log::warn!("Failed to save cache: {}", e);
     }
 
     report.print(cli.dry_run, cli.verbose);
@@ -720,10 +715,7 @@ mod tests {
         let config = Config {
             dashify: false,
             sources: vec![src_dir.path().to_string_lossy().to_string()],
-            rules: HashMap::from([(
-                dest_dir.path().to_string_lossy().to_string(),
-                vec!["pdf".to_string()],
-            )]),
+            rules: HashMap::from([(dest_dir.path().to_string_lossy().to_string(), vec!["pdf".to_string()])]),
             on_duplicate: DuplicateAction::Skip,
             exclude: Vec::new(),
             preserve_paths: true,
@@ -750,10 +742,7 @@ mod tests {
         let config = Config {
             dashify: false,
             sources: vec![src_dir.path().to_string_lossy().to_string()],
-            rules: HashMap::from([(
-                dest_dir.path().to_string_lossy().to_string(),
-                vec!["pdf".to_string()],
-            )]),
+            rules: HashMap::from([(dest_dir.path().to_string_lossy().to_string(), vec!["pdf".to_string()])]),
             on_duplicate: DuplicateAction::Skip,
             exclude: Vec::new(),
             preserve_paths: false,

@@ -143,7 +143,7 @@ fn describe_dow(dow: &str) -> String {
         }
     }
     if dow.contains(',') {
-        let days: Vec<String> = dow.split(',').map(|d| day_name(d)).collect();
+        let days: Vec<String> = dow.split(',').map(&day_name).collect();
         return days.join(", ");
     }
     day_name(dow)

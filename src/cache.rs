@@ -70,9 +70,7 @@ impl Cache {
         for (name, cached_entry) in &cached.entries {
             match current.entries.get(name) {
                 Some(current_entry) => {
-                    if cached_entry.size != current_entry.size
-                        || cached_entry.mtime != current_entry.mtime
-                    {
+                    if cached_entry.size != current_entry.size || cached_entry.mtime != current_entry.mtime {
                         return false;
                     }
                 }
@@ -86,8 +84,7 @@ impl Cache {
     /// Take a snapshot of all files in a directory (not recursive).
     pub fn snapshot_dir(dir: &Path) -> Result<DirSnapshot> {
         let mut entries = HashMap::new();
-        let read_dir =
-            fs::read_dir(dir).context(format!("Failed to read directory {}", dir.display()))?;
+        let read_dir = fs::read_dir(dir).context(format!("Failed to read directory {}", dir.display()))?;
 
         for entry in read_dir {
             let entry = entry?;
@@ -98,8 +95,7 @@ impl Cache {
             }
 
             if let Some(filename) = path.file_name() {
-                let meta = fs::metadata(&path)
-                    .context(format!("Failed to stat {}", path.display()))?;
+                let meta = fs::metadata(&path).context(format!("Failed to stat {}", path.display()))?;
                 let mtime = meta
                     .modified()
                     .unwrap_or(SystemTime::UNIX_EPOCH)
@@ -122,17 +118,13 @@ impl Cache {
             .unwrap_or_default()
             .as_secs();
 
-        Ok(DirSnapshot {
-            entries,
-            scanned_at,
-        })
+        Ok(DirSnapshot { entries, scanned_at })
     }
 
     /// Update the cache for a given directory with a fresh snapshot.
     pub fn update_dir(&mut self, dir: &Path) -> Result<()> {
         let snapshot = Self::snapshot_dir(dir)?;
-        self.dirs
-            .insert(dir.to_string_lossy().to_string(), snapshot);
+        self.dirs.insert(dir.to_string_lossy().to_string(), snapshot);
         Ok(())
     }
 

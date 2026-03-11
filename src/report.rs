@@ -121,11 +121,7 @@ impl Report {
             if !verbose && *action == Action::Unmanaged {
                 continue;
             }
-            let entries: Vec<&ReportEntry> = self
-                .entries
-                .iter()
-                .filter(|e| &e.action == action)
-                .collect();
+            let entries: Vec<&ReportEntry> = self.entries.iter().filter(|e| &e.action == action).collect();
             if entries.is_empty() {
                 continue;
             }
