@@ -20,11 +20,11 @@ mod report;
 
 use cache::Cache;
 use cli::{Cli, Commands, CronAction};
-use config::{Config, DuplicateAction};
+use config::{Config, DuplicateAction, xdg_data_dir};
 use report::{Action, Report};
 
 fn setup_logging() -> Result<()> {
-    let log_dir = dirs::data_local_dir()
+    let log_dir = xdg_data_dir()
         .unwrap_or_else(|| PathBuf::from("."))
         .join("kondo")
         .join("logs");
