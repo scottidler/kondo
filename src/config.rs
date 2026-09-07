@@ -31,19 +31,10 @@ pub fn xdg_data_dir() -> Option<PathBuf> {
     dirs::home_dir().map(|h| h.join(".local").join("share"))
 }
 
-fn expand_tilde(path: &str) -> PathBuf {
-    if let Some(rest) = path.strip_prefix("~/")
-        && let Some(home) = dirs::home_dir()
-    {
-        return home.join(rest);
-    }
-    if path == "~"
-        && let Some(home) = dirs::home_dir()
-    {
-        return home;
-    }
-    PathBuf::from(path)
-}
+// Expand a leading `~/` or bare `~` to `$HOME`; anything else passes through
+// unchanged. Was a local fn here; now shared via the `expand-tilde` crate,
+// behaviorally identical for these two cases.
+use expand_tilde::expand_tilde;
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "lowercase")]
@@ -94,7 +85,7 @@ impl Default for Config {
 impl Config {
     /// Get expanded source paths
     pub fn source_paths(&self) -> Vec<PathBuf> {
-        self.sources.iter().map(|s| expand_tilde(s)).collect()
+        self.sources.iter().map(expand_tilde).collect()
     }
 
     /// Build a reverse lookup: extension -> destination path
